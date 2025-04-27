@@ -157,8 +157,24 @@ public:
     }
 };
 
-class ModsLayer : public CCNode {
+class ModsLayer : public CCLayer {
 public:
+
+    class ModsList : public CCLayer {
+    public:
+        CREATE_FUNC(ModsList);
+        virtual bool init() override {
+            if (!CCLayer::init()) return false;
+            this->addChildAtPosition(SimpleTextArea::create(
+                "here goes a redirect layer\n \n \n sorry but there will be touch bugs\nif i switch scene from ModsLayer to new ModsLayer..."
+            ), Anchor::Center, {}, false);
+            return true;
+        }
+        virtual void onEnterTransitionDidFinish() override {
+            CCLayer::onEnterTransitionDidFinish();
+            queueInMainThread([&] { openModsList(); });
+        }
+    };
 
     auto inline static NEXT_SETUP_TYPE = std::string("");
 
@@ -228,6 +244,9 @@ public:
             MENU->setID("MODPACK_CREATOR"_spr);
             MENU->setUserObject("MODPACK"_spr, MODPACK);
             MENU->setPositionY(MENU->getContentHeight() - (320.000 - 308.000));
+            MENU->setAnchorPoint(CCPointZero);
+            MENU->setContentWidth(486.000);
+            limitNodeWidth(MENU, CCScene::get()->getContentWidth() * 0.8f, 1.f, 0.1f);
 
             CONTAINER = CCNode::create();
             CONTAINER->setPositionX(-9999.f);
@@ -243,7 +262,7 @@ public:
                 };
 
             auto bg = CCScale9Sprite::create("square02b_small.png");
-            bg->setContentSize(MENU->getContentSize() * 0.8f);
+            bg->setContentSize({ 486.000, 888.f});
             bg->setOpacity(90);
             bg->setColor(ccBLACK);
             bg->setPosition(CCPointMake(0.f, -10.f));
@@ -254,7 +273,7 @@ public:
             step1();
 
             ModsLayer::NEXT_SETUP_TYPE = "setupForSelector";
-            openModsList();
+            switchToScene(ModsList::create());
         }
 
         static void create() {
@@ -264,7 +283,7 @@ public:
             static std::string mdAreaStr;
             if (!progress_popup or !progress_popup->isRunning()) {
                 mdAreaStr = "```";
-                progress_popup = MDPopup::create("creating modpack...", mdAreaStr, "Close");
+                progress_popup = MDPopup::create("creating modpack...", mdAreaStr, "close");
                 popupCustomSetup(progress_popup);
                 progress_popup->show();
 
@@ -492,6 +511,7 @@ public:
                         m_mainLayer->getContentWidth() - 22.f, 
                         key, "geode.loader/mdFont.fnt"
                     );
+                    input->setCommonFilter(CommonFilter::Any);
                     m_buttonMenu->addChildAtPosition(input, Anchor::Bottom, {0, 30.f});
 
                     input->setString(MODPACK->data[key].dump());
@@ -807,7 +827,7 @@ public:
             CCMenuItemExt::assignCallback<CCNode>(wiwi, [](CCNode*) {
                 ModpackCreator::MENU = nullptr;
                 NEXT_SETUP_TYPE = "setupForPacksList";
-                openModsList();
+                switchToScene(ModsList::create());
                 });
         }
     }
@@ -978,7 +998,7 @@ public:
                                     auto err = std::remove(path);
                                     if (err) log::error("remove err{} for {}", err, path);
                                     NEXT_SETUP_TYPE = "setupForPacksList";
-                                    openModsList();
+                                    switchToScene(ModsList::create());
                                 }, modpack
                             );
                         };
@@ -1025,6 +1045,8 @@ public:
                 ->setGap(-3.f)
             );
             scroll->scrollToTop();
+            if (scroll->m_contentLayer->getContentSize().equals(scroll->getContentSize())) void();
+            else scroll->m_contentLayer->setContentSize(scroll->getContentSize());
 
             static auto last_pos = CCPointMake(0, 0);
             scroll->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create([scroll] {
@@ -1076,7 +1098,7 @@ public:
 
             wiwi->setVisible(!wiwi->m_bVisible);
 
-            auto title = SimpleTextArea::create("Your Modpacks", "bigFont.fnt", 0.60f);
+            auto title = SimpleTextArea::create("Your Modpacks", "bigFont.fnt", 0.60f, 290.f);
             title->setID("title"_spr);
             title->setAlignment(CCTextAlignment::kCCTextAlignmentCenter);
             title->setPosition(wiwi->getPosition() + CCSizeMake(0, 5));
@@ -1099,13 +1121,13 @@ public:
                         openInfoPopup(getMod());
                     }
                 );
-                menu->addChildAtPosition(info, Anchor::BottomLeft, { 328.f, 16.f }, false);
+                menu->addChildAtPosition(info, Anchor::BottomLeft, { 323.f, 16.f }, false);
             };
         }
 
         if (auto wiwi = typeinfo_cast<CCMenuItem*>(this->querySelector("back-button"))) {
             //go back to normal list first, not MenuLayer
-            CCMenuItemExt::assignCallback<CCNode>(wiwi, [](CCNode*) { openModsList(); });
+            CCMenuItemExt::assignCallback<CCNode>(wiwi, [](CCNode*) { switchToScene(ModsList::create()); });
         }
 
     }
@@ -1121,6 +1143,23 @@ public:
                     };
             }
         }
+
+        /*this->runAction(CCSequence::create(
+            CCDelayTime::create(0.98),
+            CallFuncExt::create(
+                [this] {
+                    if (auto btn = typeinfo_cast<CCMenuItem*>(this->querySelector("page-next-button")))
+                        btn->activate();
+                    if (auto btn = typeinfo_cast<CCMenuItem*>(this->querySelector("page-previous-button")))
+                        btn->activate();
+                }
+            ),
+            CallFuncExt::create(
+                [this] {
+                }
+            ),
+            nullptr
+        ));*/
 
         if (ModpackCreator::MENU) this->addChild(ModpackCreator::MENU);
 
@@ -1171,7 +1210,7 @@ public:
                 auto modpacks_button = CCMenuItemExt::createSpriteExtra(
                     image, [&](CCNode*) {
                         NEXT_SETUP_TYPE = "setupForPacksList";
-                        openModsList();
+                        switchToScene(ModsList::create());
                     }
                 );
                 modpacks_button->setID("modpacks_button"_spr);
