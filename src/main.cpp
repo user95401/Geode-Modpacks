@@ -379,7 +379,7 @@ public:
 
             if (!mdArea or !mdArea->isRunning()) return;
 
-            logToMDPopup("creating list...");
+            logToMDPopup("{}", "creating list...");
             if (packit) zipper.add("this.geode_modlist", list.dump());
             else file::writeString(list_path, list.dump());
 
@@ -733,7 +733,7 @@ public:
         else {
             pack->data["files_installed"] = true;
 
-            auto unzip_path = dirs::getTempDir() / ZipUtils::base64URLEncode(pack->data["name"].dump());
+            auto unzip_path = dirs::getTempDir() / ZipUtils::base64URLEncode(pack->data["name"].dump()).c_str();
             auto unzip = file::Unzip::create(pack->path);
             if (unzip.isOk()) unzip.unwrap().extractAllTo(unzip_path);
             
