@@ -1,5 +1,5 @@
 {
-	"geode": "4.3.1",
+	"geode": "4.4.0",
 	"gd": {
 		"win": "2.2074",
 		"android": "2.2074",
@@ -9,7 +9,7 @@
 
 	"id": "user95401.modpacks",
 	"name": "Modpacks",
-	"version": "v1.0.0-beta.2",
+	"version": "v1.0.0-beta.3",
 	"developer": "user95401",
 
 	"description": "adds unofficial geode mods pack system integrated to geode loader interface",

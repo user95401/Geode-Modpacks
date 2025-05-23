@@ -187,15 +187,15 @@ public:
     struct ModpackCreator {
         inline static Modpack* MODPACK;
         inline static std::map<std::string, Mod*> MODS_SELECTED;
-        inline static CCNode* CONTAINER;
-        inline static CCMenu* MENU;
+        inline static Ref<CCNode> CONTAINER;
+        inline static Ref<CCMenu> MENU;
 
         inline static std::function<void(std::string)> nav_panel_set_title_func;
         static void setTitle(auto title = std::string("")) {
             if (nav_panel_set_title_func) nav_panel_set_title_func(title);
         }
 
-        static void popupCustomSetup(FLAlertLayer* popup) {
+        static void popupCustomSetup(Ref<FLAlertLayer> popup) {
             popup->m_noElasticity = true;
             if (auto a = CCScene::get()->querySelector("ModsLayer")) popup->m_scene = a;
             if (popup->m_mainLayer) {
@@ -257,7 +257,7 @@ public:
             title->setAlignment(kCCTextAlignmentCenter);
             title->setID("title"_spr);
             MENU->addChild(title);
-            nav_panel_set_title_func = [title](std::string str) {
+            nav_panel_set_title_func = [title = Ref(title)](std::string str) {
                 if (title) title->setText(str);
                 };
 
@@ -284,7 +284,7 @@ public:
             if (!progress_popup or !progress_popup->isRunning()) {
                 mdAreaStr = "```";
                 progress_popup = MDPopup::create("creating modpack...", mdAreaStr, "close");
-                popupCustomSetup(progress_popup);
+                popupCustomSetup(progress_popup.data());
                 progress_popup->show();
 
                 progress_popup->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create(
@@ -584,7 +584,7 @@ public:
                 recreate_poup();
                 });
 
-            popupCustomSetup(popup);
+            popupCustomSetup(popup.data());
             popup->show();
 
             while (MENU->getChildByType<CCMenuItem>(-1))
@@ -1226,7 +1226,9 @@ class $modify(ModsLayerExt, CCLayer) {
     bool init() {
         if (!CCLayer::init()) return false;
         if (typeinfo_cast<ModsLayer*>(this)) {
-            queueInMainThread([&] {((ModsLayer*)this)->customSetup(); });
+            queueInMainThread(
+                [__this = Ref(this)] { reinterpret_cast<ModsLayer*>(__this.data())->customSetup(); }
+            );
         }
         return true;
     }
@@ -1235,6 +1237,7 @@ class $modify(ModsLayerExt, CCLayer) {
 void modLoaded() {
 
     new EventListener<EventFilter<ModLogoUIEvent>>(+[](ModLogoUIEvent* event) {
+        if (!event) return ListenerResult::Propagate;
         typedef ModsLayer::ModpackCreator MPC;
         auto id = event->getModID();
         auto mod = event->getMod().value_or(nullptr);
