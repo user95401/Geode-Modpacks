@@ -92,34 +92,56 @@ public:
     bool include_config = true;
     bool include_saves = false;
 
+    inline static auto packsLoadPoints = std::map<std::filesystem::path, size_t>{};
+    inline static auto loadedPacks = std::map<std::filesystem::path, Ref<Modpack>>{};
+
     void loadFromFile(std::filesystem::path path) {
         this->path = CCFileUtils::get()->fullPathForFilename(path.string().c_str(), false);
         if (string::contains(path.string(), ".geode_modpack")) {
-
-            miniz_cpp::zip_file file(path.string());
-
-            if (file.has_file("this.geode_modlist")) {
-                auto read = file.read(file.getinfo("this.geode_modlist"));
-                data = matjson::parse(read).unwrapOrDefault();
-            };
-            
-            if (file.has_file("about.md")) {
-                auto read = file.read(file.getinfo("about.md"));
-                read = { read.begin(), read.end() };
+            auto size = packsLoadPoints.contains(path) ? packsLoadPoints[path] : 0;
+            auto size_mismatch = size != std::filesystem::file_size(path);
+            if (not size_mismatch) {
+                auto loaded = loadedPacks[path].data();
+                data = loadedPacks[path]->data;
+                about = loadedPacks[path]->about;
+                if (loadedPacks[path]->logo) logo->setDisplayFrame(loadedPacks[path]->logo->displayFrame());
+                include_settings_data = loadedPacks[path]->include_settings_data;
+                include_saved_data = loadedPacks[path]->include_saved_data;
+                include_config = loadedPacks[path]->include_config;
+                include_saves = loadedPacks[path]->include_saves;
             }
+            else if (auto file_open = file::CCMiniZFile::create(path.string())) {
+                packsLoadPoints[path] = std::filesystem::file_size(path);
+                loadedPacks[path] = this;
 
-            if (file.has_file("logo.png")) {
-                auto read = file.read(file.getinfo("logo.png"));
-                std::vector<uint8_t> bin(read.begin(), read.end());
-                if (auto a = createTextureFromPNGData(bin)) logo->initWithTexture(a);
+                auto file = file_open.unwrapOrDefault();
+
+                if (auto read = file->read("this.geode_modlist")) {
+                    data = matjson::parse(read.unwrapOrDefault()).unwrapOrDefault();
+                } else log::error("failed to read this.geode_modlist, {}", read.err().value_or("unk err"));
+
+                if (auto read = file->read("about.md")) {
+                    about = read.unwrapOrDefault();
+                }
+                else log::warn("failed to read about.md, {}", read.err().value_or("unk err"));
+
+                if (auto read = file->read("README.md")) {
+                    about = read.unwrapOrDefault();
+                }
+                else log::info("failed to read README.md, {}", read.err().value_or("unk err"));
+
+                if (auto read = file->readAsCCTexture("logo.png")) {
+                    logo->initWithTexture(read.unwrapOrDefault());
+                }
+                else log::warn("failed to read logo.png, {}", read.err().value_or("unk err"));
+
+                if (auto read = file->readAsCCTexture("pack.png")) {
+                    logo->initWithTexture(read.unwrapOrDefault());
+                }
+                else log::info("failed to read pack.png, {}", read.err().value_or("unk err"));
+
             }
-
-            if (file.has_file("pack.png")) {
-                auto read = file.read(file.getinfo("pack.png"));
-                std::vector<uint8_t> bin(read.begin(), read.end());
-                if (auto a = createTextureFromPNGData(bin)) logo->initWithTexture(a);
-            }
-
+             
         }
         else {
             auto read = file::readJson(path).unwrapOrDefault();
@@ -1062,14 +1084,13 @@ public:
                 menu->addChildAtPosition(item, Anchor::Center, {}, false);
             }
             scroll->m_contentLayer->setLayout(RowLayout::create()
+                ->setCrossAxisAlignment(AxisAlignment::End)
                 ->setCrossAxisOverflow(true)
                 ->setGrowCrossAxis(true)
                 ->setAxisReverse(true)
                 ->setGap(-3.f)
             );
             scroll->scrollToTop();
-            if (scroll->m_contentLayer->getContentSize().equals(scroll->getContentSize())) void();
-            else scroll->m_contentLayer->setContentSize(scroll->getContentSize());
 
             static auto last_pos = CCPointMake(0, 0);
             scroll->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create([scroll] {
@@ -1232,8 +1253,6 @@ public:
             if (auto parent = button_ref->getParent()) {
                 auto modpacks_button = CCMenuItemExt::createSpriteExtra(
                     image, [&](CCNode*) {
-
-                        return file::testCCMiniZFile();
                         NEXT_SETUP_TYPE = "setupForPacksList";
                         switchToScene(ModsList::create());
                     }

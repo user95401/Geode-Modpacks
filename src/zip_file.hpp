@@ -5967,8 +5967,10 @@ namespace geode::utils::file {
 
         log += "```\n";
 
-        auto zip_opn = CCMiniZFile::create((dirs::getGameDir() / "test.zip").string());
-        if (zip_opn.isOk()) log += "Archive loaded: test.zip\n";
+        auto path = (dirs::getGameDir() / "test.zip");
+
+        auto zip_opn = CCMiniZFile::create(path.string());
+        if (zip_opn.isOk()) log += "Archive loaded\n";
         else log +="<cr>Archive wasn't loaded: "+ zip_opn.err().value_or("unk") +"</c>\n";
 
         auto zip = zip_opn.unwrapOrDefault();
@@ -6012,7 +6014,7 @@ namespace geode::utils::file {
 
         log += "```\n --- \n```\n";
 
-        if (auto zip_opn = CCMiniZFile::create("test.zip")) {
+        if (auto zip_opn = CCMiniZFile::create(path.string())) {
             auto zip = zip_opn.unwrapOrDefault();
             log += "Created archive loaded\n";
             if (auto e = zip->listFiles()) for (auto file : e.unwrapOrDefault()) {
