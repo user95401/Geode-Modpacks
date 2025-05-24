@@ -2,6 +2,8 @@
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/utils/web.hpp>
 
+#include <zip_file.hpp>
+
 using namespace geode::prelude; 
 
 #include <regex>
@@ -93,26 +95,31 @@ public:
     void loadFromFile(std::filesystem::path path) {
         this->path = CCFileUtils::get()->fullPathForFilename(path.string().c_str(), false);
         if (string::contains(path.string(), ".geode_modpack")) {
-            auto zip = file::Unzip::create(path);
-            if (zip.isOk()) {
 
-                auto list_read = zip.unwrap().extract("this.geode_modlist").unwrapOrDefault();
-                data = matjson::parse(
-                    std::string(list_read.begin(), list_read.end())
-                ).unwrapOrDefault();
+            miniz_cpp::zip_file file(path.string());
 
-                auto about_read = zip.unwrap().extract("about.md").unwrapOrDefault();
-                if (about_read.size()) about = { about_read.begin(), about_read.end() };
-
-                auto logopng_read = zip.unwrap().extract("logo.png").unwrapOrDefault();
-                if (logopng_read.size()) if (auto a = createTextureFromPNGData(logopng_read))
-                    logo->initWithTexture(a);
-
-                auto packpng_read = zip.unwrap().extract("pack.png").unwrapOrDefault();
-                if (packpng_read.size()) if (auto a = createTextureFromPNGData(packpng_read))
-                    logo->initWithTexture(a);
-
+            if (file.has_file("this.geode_modlist")) {
+                auto read = file.read(file.getinfo("this.geode_modlist"));
+                data = matjson::parse(read).unwrapOrDefault();
+            };
+            
+            if (file.has_file("about.md")) {
+                auto read = file.read(file.getinfo("about.md"));
+                read = { read.begin(), read.end() };
             }
+
+            if (file.has_file("logo.png")) {
+                auto read = file.read(file.getinfo("logo.png"));
+                std::vector<uint8_t> bin(read.begin(), read.end());
+                if (auto a = createTextureFromPNGData(bin)) logo->initWithTexture(a);
+            }
+
+            if (file.has_file("pack.png")) {
+                auto read = file.read(file.getinfo("pack.png"));
+                std::vector<uint8_t> bin(read.begin(), read.end());
+                if (auto a = createTextureFromPNGData(bin)) logo->initWithTexture(a);
+            }
+
         }
         else {
             auto read = file::readJson(path).unwrapOrDefault();
@@ -317,7 +324,7 @@ public:
             auto pack_path = getMod()->getConfigDir() / (filename + ".geode_modpack");
 
             auto packit = false;
-            auto zipper = *file::Zip::create(pack_path);
+            auto zipper = miniz_cpp::zip_file();
 
             auto& list = MODPACK->data;
 
@@ -333,9 +340,9 @@ public:
                 if (sel.second) {
                     logToMDPopup("adding files of {} (ptr ok? - {})", sel.first, (bool)sel.second);
                     packit = true;
-                    zipper.addFrom(
-                        sel.second->getPackagePath(),
-                        std::filesystem::path() / "mods" 
+                    zipper.write(
+                        sel.second->getPackagePath().string(),
+                        (std::filesystem::path() / "mods").string()
                     );
                     logToMDPopup("package added, {}", sel.second->getPackagePath());
                     if (MODPACK->include_config) {
@@ -345,9 +352,16 @@ public:
                         for (auto path : file::readDirectory(dir, true).unwrapOrDefault()) {
                             auto id = sel.second->getID();
                             auto str = path.parent_path().string();
-                            zipper.addFrom(
-                                path, atzip / std::string(str.begin() + str.rfind(id), str.end())
-                            );
+                            //00000000 mod.id/ ...........++
+                            auto name = std::filesystem::path(path).filename();
+                            auto rel = std::string(str.begin() + str.rfind(id), str.end());
+                            if (path.has_filename()) try {
+                                zipper.write(
+                                    path.string(),
+                                    (atzip / rel / name).string()
+                                );
+                            }
+                            catch (...) {};
                         }
                     }
                     if (MODPACK->include_saves) {
@@ -357,11 +371,18 @@ public:
                         for (auto path : file::readDirectory(dir, true).unwrapOrDefault()) {
                             auto id = sel.second->getID();
                             auto str = path.parent_path().string();
-                            zipper.addFrom(
-                                path, atzip / std::string(str.begin() + str.rfind(id), str.end())
-                            );
+                            //00000000 mod.id/ ...........++
+                            auto name = std::filesystem::path(path).filename();
+                            auto rel = std::string(str.begin() + str.rfind(id), str.end());
+                            if (path.has_filename()) try {
+                                zipper.write(
+                                    path.string(),
+                                    (atzip / rel / name).string()
+                                );
+                            }
+                            catch (...) {};
                         }
-                        //todo ÒÓÒ ÏÈÇÄÅÖ, ×ÈÍÈ
+                        //todo ÒÓÒ ÏÈÇÄÅÖ, ×ÈÍÈ?
                     }
                 }
                 logToMDPopup("adding {} entry", sel.first);
@@ -399,8 +420,10 @@ public:
             if (!mdArea or !mdArea->isRunning()) return;
 
             logToMDPopup("{}", "creating list...");
-            if (packit) zipper.add("this.geode_modlist", list.dump());
+            if (packit) zipper.writestr("this.geode_modlist", list.dump());
             else file::writeString(list_path, list.dump());
+
+            if (packit) zipper.save(pack_path.string());
 
             std::filesystem::path result_path = packit ? pack_path : list_path;
             auto result_name = std::filesystem::path(result_path).filename();
@@ -754,8 +777,8 @@ public:
             pack->data["files_installed"] = true;
 
             auto unzip_path = dirs::getTempDir() / ZipUtils::base64URLEncode(pack->data["name"].dump()).c_str();
-            auto unzip = file::Unzip::create(pack->path);
-            if (unzip.isOk()) unzip.unwrap().extractAllTo(unzip_path);
+            auto unzip = miniz_cpp::zip_file(pack->path.string());
+            unzip.extractall(unzip_path.string());
             
             auto options = 
                 std::filesystem::copy_options::recursive |
@@ -1209,6 +1232,8 @@ public:
             if (auto parent = button_ref->getParent()) {
                 auto modpacks_button = CCMenuItemExt::createSpriteExtra(
                     image, [&](CCNode*) {
+
+                        return file::testCCMiniZFile();
                         NEXT_SETUP_TYPE = "setupForPacksList";
                         switchToScene(ModsList::create());
                     }
