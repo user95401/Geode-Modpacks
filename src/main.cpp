@@ -4,6 +4,20 @@
 
 #include <zip_file.hpp>
 
+uint32_t fnv1a_hash(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) return 0;
+
+    uint32_t hash = 2166136261u;
+    char c;
+    while (file.get(c)) {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+
 using namespace geode::prelude; 
 
 #include <regex>
@@ -92,28 +106,25 @@ public:
     bool include_config = true;
     bool include_saves = false;
 
-    inline static auto packsLoadPoints = std::map<std::filesystem::path, size_t>{};
+    inline static auto packsLoadPoints = std::map<std::filesystem::path, uint32_t>{};
     inline static auto loadedPacks = std::map<std::filesystem::path, Ref<Modpack>>{};
 
     void loadFromFile(std::filesystem::path path) {
         this->path = CCFileUtils::get()->fullPathForFilename(path.string().c_str(), false);
         if (string::contains(path.string(), ".geode_modpack")) {
             auto size = packsLoadPoints.contains(path) ? packsLoadPoints[path] : 0;
-            auto size_mismatch = size != std::filesystem::file_size(path);
+            auto size_mismatch = size != fnv1a_hash(path.string());
             if (not size_mismatch) {
                 auto loaded = loadedPacks[path].data();
-                data = loadedPacks[path]->data;
-                about = loadedPacks[path]->about;
-                if (loadedPacks[path]->logo) logo->setDisplayFrame(loadedPacks[path]->logo->displayFrame());
-                include_settings_data = loadedPacks[path]->include_settings_data;
-                include_saved_data = loadedPacks[path]->include_saved_data;
-                include_config = loadedPacks[path]->include_config;
-                include_saves = loadedPacks[path]->include_saves;
+                data = loaded->data;
+                about = loaded->about;
+                if (loaded->logo) logo->setDisplayFrame(loaded->logo->displayFrame());
+                include_settings_data = loaded->include_settings_data;
+                include_saved_data = loaded->include_saved_data;
+                include_config = loaded->include_config;
+                include_saves = loaded->include_saves;
             }
             else if (auto file_open = file::CCMiniZFile::create(path.string())) {
-                packsLoadPoints[path] = std::filesystem::file_size(path);
-                loadedPacks[path] = this;
-
                 auto file = file_open.unwrapOrDefault();
 
                 if (auto read = file->read("this.geode_modlist")) {
@@ -140,8 +151,9 @@ public:
                 }
                 else log::info("failed to read pack.png, {}", read.err().value_or("unk err"));
 
+                loadedPacks[path] = this;
+                packsLoadPoints[path] = std::filesystem::file_size(path);
             }
-             
         }
         else {
             auto read = file::readJson(path).unwrapOrDefault();
@@ -149,6 +161,7 @@ public:
         };
 
         if (data.contains("logo")) {
+            logo->initWithSpriteFrameName("geode.loader/logo-base.png");
             auto val = data["logo"].asString().unwrapOrDefault();
 
             static const std::regex link_regex(R"(^(https?|ftp)://[^\s/$.?#].[^\s]*$)", std::regex::icase);
@@ -178,13 +191,15 @@ public:
     Modpack(std::filesystem::path path = "") {
         data["name"] = GameManager::get()->m_playerName.c_str() + std::string("'s modpack");
         data["creator"] = GameManager::get()->m_playerName.c_str();
-        logo = CCSprite::createWithSpriteFrameName("geode.loader/logo-base.png");
+        logo = CCSprite::create();
 
         if (cocos::fileExistsInSearchPaths(path.string().c_str())) {
             loadFromFile(path);
         }
     }
 };
+
+inline static Ref<Modpack> loadit_pack = nullptr; //auto load one if exists
 
 class ModsLayer : public CCLayer {
 public:
@@ -206,6 +221,7 @@ public:
     };
 
     auto inline static NEXT_SETUP_TYPE = std::string("");
+    auto inline static NEXT_CUSTOM_SETUP = std::function<void(CCLayer*)>();
 
     auto inline static STATUS_TITLE = std::string("");
     auto inline static STATUS_PERCENTAGE = std::string("");
@@ -346,7 +362,7 @@ public:
             auto pack_path = getMod()->getConfigDir() / (filename + ".geode_modpack");
 
             auto packit = false;
-            auto zipper = miniz_cpp::zip_file();
+            auto zipper = file::CCMiniZFile::create(pack_path.string()).unwrapOrDefault();
 
             auto& list = MODPACK->data;
 
@@ -362,9 +378,10 @@ public:
                 if (sel.second) {
                     logToMDPopup("adding files of {} (ptr ok? - {})", sel.first, (bool)sel.second);
                     packit = true;
-                    zipper.write(
-                        sel.second->getPackagePath().string(),
-                        (std::filesystem::path() / "mods").string()
+                    auto packagep = sel.second->getPackagePath();
+                    zipper->write(
+                        packagep.string(), 
+                        file::readBinary(std::filesystem::path() / "mods" / packagep.filename()).unwrapOrDefault()
                     );
                     logToMDPopup("package added, {}", sel.second->getPackagePath());
                     if (MODPACK->include_config) {
@@ -377,13 +394,10 @@ public:
                             //00000000 mod.id/ ...........++
                             auto name = std::filesystem::path(path).filename();
                             auto rel = std::string(str.begin() + str.rfind(id), str.end());
-                            if (path.has_filename()) try {
-                                zipper.write(
-                                    path.string(),
-                                    (atzip / rel / name).string()
-                                );
-                            }
-                            catch (...) {};
+                            if (path.has_filename()) zipper->write(
+                                (atzip / rel / name).string(),
+                                file::readBinary(path).unwrapOrDefault()
+                            );
                         }
                     }
                     if (MODPACK->include_saves) {
@@ -396,13 +410,10 @@ public:
                             //00000000 mod.id/ ...........++
                             auto name = std::filesystem::path(path).filename();
                             auto rel = std::string(str.begin() + str.rfind(id), str.end());
-                            if (path.has_filename()) try {
-                                zipper.write(
-                                    path.string(),
-                                    (atzip / rel / name).string()
-                                );
-                            }
-                            catch (...) {};
+                            if (path.has_filename()) zipper->write(
+                                (atzip / rel / name).string(),
+                                file::readBinary(path).unwrapOrDefault()
+                            );
                         }
                         //todo ÒÓÒ ÏÈÇÄÅÖ, ×ÈÍÈ?
                     }
@@ -442,10 +453,10 @@ public:
             if (!mdArea or !mdArea->isRunning()) return;
 
             logToMDPopup("{}", "creating list...");
-            if (packit) zipper.writestr("this.geode_modlist", list.dump());
+            if (packit) zipper->write("this.geode_modlist", list.dump());
             else file::writeString(list_path, list.dump());
 
-            if (packit) zipper.save(pack_path.string());
+            if (packit) zipper->save();
 
             std::filesystem::path result_path = packit ? pack_path : list_path;
             auto result_name = std::filesystem::path(result_path).filename();
@@ -792,24 +803,25 @@ public:
 
     };
 
-    inline static void install_pack(Modpack* pack) {
+    inline static void installPack(Modpack* pack, bool restart = false) {
 
         if (pack->data.contains("files_installed")) void();
         else {
             pack->data["files_installed"] = true;
 
             auto unzip_path = dirs::getTempDir() / ZipUtils::base64URLEncode(pack->data["name"].dump()).c_str();
-            auto unzip = miniz_cpp::zip_file(pack->path.string());
-            unzip.extractall(unzip_path.string());
-            
-            auto options = 
-                std::filesystem::copy_options::recursive |
-                std::filesystem::copy_options::overwrite_existing;
-            std::error_code err;
+            if (auto unzip = file::CCMiniZFile::create(pack->path.string())) {
+                unzip.unwrapOrDefault()->extractAll(unzip_path.string());
 
-            std::filesystem::copy(unzip_path / "mods", dirs::getModsDir(), options, err);
-            std::filesystem::copy(unzip_path / "config", dirs::getModConfigDir(), options, err);
-            std::filesystem::copy(unzip_path / "saves", dirs::getModsSaveDir(), options, err);
+                auto options =
+                    std::filesystem::copy_options::recursive |
+                    std::filesystem::copy_options::overwrite_existing;
+                std::error_code err;
+
+                std::filesystem::copy(unzip_path / "mods", dirs::getModsDir(), options, err);
+                std::filesystem::copy(unzip_path / "config", dirs::getModConfigDir(), options, err);
+                std::filesystem::copy(unzip_path / "saves", dirs::getModsSaveDir(), options, err);
+            };
         }
 
         if (pack->data.contains("install_progress")) void();
@@ -831,7 +843,7 @@ public:
         pack->data["install_progress"].erase(id);
 
         auto mod_package = (dirs::getModsDir() / (id + ".geode"));
-        if (fileExistsInSearchPaths(mod_package.string().c_str())) return install_pack(pack);
+        if (fileExistsInSearchPaths(mod_package.string().c_str())) return installPack(pack, restart);
 
         STATUS_PERCENTAGE = "0%  ";
 
@@ -840,6 +852,7 @@ public:
 
         if (HIDE_STATUS) {
             SHOW_RESTART_BUTTON = true;
+            if (restart) game::restart();
             return;
         }
 
@@ -849,7 +862,7 @@ public:
         auto req = web::WebRequest();
         auto listener = new EventListener<web::WebTask>;
         listener->bind(
-            [id, pack](web::WebTask::Event* e) {
+            [id, pack, restart](web::WebTask::Event* e) {
                 if (web::WebProgress* prog = e->getProgress()) {
                     STATUS_PERCENTAGE = fmt::format("{}%  ", (int)prog->downloadProgress().value_or(0.f));
                 }
@@ -858,7 +871,7 @@ public:
                     if (res->code() < 399) {
                         res->into(dirs::getModsDir() / (id + ".geode"));
                     }
-                    install_pack(pack);
+                    installPack(pack, restart);
                 }
             }
         );
@@ -892,7 +905,9 @@ public:
             scroll->setPosition(CCPointMake(15.f, 0.5f));//fffffffuuuUUUUuck
             if (auto parent = wiwi->getParent()) parent->addChild(scroll);
 
-            for (auto file : file::readDirectory(getMod()->getConfigDir(), true).unwrapOrDefault()) {
+            auto files = file::readDirectory(getMod()->getConfigDir(), true).unwrapOrDefault();
+            if (loadit_pack) files.push_back(loadit_pack->path);
+            for (auto file : files) {
                 auto menu = CCMenu::create();
                 menu->setContentHeight(46.000f);
                 menu->setContentWidth(scroll->getContentWidth());
@@ -916,24 +931,27 @@ public:
                 logo->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create(
                     [logo] {
                         if (logo) logo->setAnchorPoint(CCPointMake(0.f, 0.5f));
-                        if (logo) limitNodeSize(logo, CCSizeMake(1, 1) * 34.f, 1337.f, 0.1f);
+                        if (logo) limitNodeSize(logo, CCSizeMake(1, 1) * 32.f, 1337.f, 0.1f);
                     }
                 ), nullptr)));
+                limitNodeSize(logo, CCSizeMake(1, 1) * 32.f, 1337.f, 0.1f); ///fffffuck *offset
                 container->addChildAtPosition(logo, Anchor::Left, { 8.000f, 0 }, false);
+
+                auto offset = logo->boundingBox().size.width + 16.f;
 
                 auto name = SimpleTextArea::create(
                     modpack->data["name"].asString().unwrapOrDefault(), "bigFont.fnt", 0.500f
                 )->getLines()[0];
                 limitNodeWidth(name, 300.000f, name->getScale(), 0.1f);
                 name->setAnchorPoint(CCPointMake(0.f, 0.85f));
-                container->addChildAtPosition(name, Anchor::Left, { 44.000f, 14.f }, false);
+                container->addChildAtPosition(name, Anchor::Left, { offset, 14.f}, false);
 
                 auto creator = SimpleTextArea::create(
                     "By: " + modpack->data["creator"].asString().unwrapOrDefault(), "goldFont.fnt", 0.42f
                 )->getLines()[0];
                 limitNodeWidth(creator, 296.000f, creator->getScale(), 0.1f);
                 creator->setAnchorPoint(CCPointMake(0.f, -0.15f));
-                container->addChildAtPosition(creator, Anchor::Left, { 44.000f + 1, -14.f }, false);
+                container->addChildAtPosition(creator, Anchor::Left, { offset, -12.f }, false);
 
                 auto item = CCMenuItemExt::createSpriteExtra(container,
                     [file](CCNode*) {
@@ -977,7 +995,7 @@ public:
                         logo->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create(
                             [logo] {
                                 if (logo) logo->setAnchorPoint(CCPointMake(0.f, 0.5f));
-                                if (logo) limitNodeSize(logo, CCSizeMake(1, 1) * 52.000f, 1337.f, 0.1f);
+                                if (logo) limitNodeSize(logo, CCSizeMake(1, 1) * 48.000f, 1337.f, 0.1f);
                             }
                         ), nullptr)));
 
@@ -989,7 +1007,7 @@ public:
                         name->setID("name"_spr);
                         limitNodeWidth(name, 226.000f, name->getScale(), 0.1f);
                         name->setAnchorPoint(CCPointMake(0.f, 0.85f));
-                        menu->addChildAtPosition(name, Anchor::TopLeft, { 88.f, -18.f }, false);
+                        menu->addChildAtPosition(name, Anchor::TopLeft, { 88.f, -19.f }, false);
 
                         auto creator = SimpleTextArea::create(
                             "By: " + modpack->data["creator"].asString().unwrapOrDefault(), "goldFont.fnt", 0.52f
@@ -997,7 +1015,15 @@ public:
                         creator->setID("creator"_spr);
                         limitNodeWidth(creator, 226.000f, creator->getScale(), 0.1f);
                         creator->setAnchorPoint(CCPointMake(0.f, -0.15f));
-                        menu->addChildAtPosition(creator, Anchor::TopLeft, { 89.000f, -54.000f }, false);
+                        menu->addChildAtPosition(creator, Anchor::TopLeft, { 88.000f, -49.000f }, false);
+
+                        auto file = SimpleTextArea::create(
+                            std::filesystem::path(modpack->path).filename().string(), "chatFont.fnt", 0.52f
+                        )->getLines()[0];
+                        file->setID("file"_spr);
+                        limitNodeWidth(file, 226.000f, file->getScale(), 0.1f);
+                        file->setAnchorPoint(CCPointMake(0.f, -0.15f));
+                        menu->addChildAtPosition(file, Anchor::TopLeft, { 88.000f, -62.000f }, false);
 
                         auto about = MDTextArea::create(modpack->about, { 280.f, 198.f});
                         about->setID("about"_spr);
@@ -1035,6 +1061,30 @@ public:
                             auto popup = inf;
                             assign_to_link(
                                 "EDIT PACK", [&] {
+                                    MDPopup::create("Pack editing...",
+                                        """" "Pack edit UI is planned, but for now its goes manually. "
+                                        """" "Packs takes their places at mod config folder. "
+                                        "\n" "- \".geode_modlist\" ones is .json text files"
+                                        "\n" "- \".geode_modpack\" ones is .zip archive files"
+                                        "\n"
+                                        "\n" "You can open them using \"Open As\" function in your file manager."
+                                        "\n"
+                                        "\n" "### .geode_modpack tips"
+                                        "\n" "- You can add logo.png or pack.png"
+                                        "\n" "- You can add about.md or README.md"
+                                        "\n"
+                                        "\n" "### .geode_modlist tips"
+                                        "\n" "- You can add logo json key with texture/frame name or.. LINK!)"
+                                        "\n" "```"
+                                        "\n"
+                                        R"({
+    "name": "awful mods",
+    "creator": "me",
+    "logo": "https://images2.imgbox.com/66/b5/erYMNC8O_o.png",
+    "entries": ...
+                                        )"
+                                        "\n" "```"
+                                        , "OK")->show();
                                 }
                             );
                             assign_to_link(
@@ -1065,7 +1115,7 @@ public:
                                 }
                                 else {
                                     popup->removeFromParent();
-                                    install_pack(modpack);
+                                    installPack(modpack);
                                 };
                                 is_installed->setValue(!is_installed->getValue());
                                 btn_ref->setString(is_installed->getValue() ? "Uninstall" : "Install");
@@ -1090,13 +1140,16 @@ public:
                 ->setAxisReverse(true)
                 ->setGap(-3.f)
             );
-            scroll->scrollToTop();
+            scroll->moveToTop();
 
             static auto last_pos = CCPointMake(0, 0);
+            static auto last_size = CCSizeMake(0, 0);
             scroll->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create([scroll] {
                 last_pos = scroll->m_contentLayer->getPosition();
+                last_size = scroll->m_contentLayer->getContentSize();
                 }), CCDelayTime::create(0.1f), nullptr)));
-            if (not last_pos.isZero()) scroll->m_contentLayer->setPosition(last_pos);
+            if (not last_pos.isZero() and last_size.equals(scroll->m_contentLayer->getContentSize()))
+                scroll->m_contentLayer->setPosition(last_pos);
         }
 
         if (auto wiwi = this->querySelector("list-actions-menu")) wiwi->setVisible(!wiwi->m_bVisible);
@@ -1262,6 +1315,8 @@ public:
                 parent->updateLayout();
             }
         }
+
+        if (NEXT_CUSTOM_SETUP) { NEXT_CUSTOM_SETUP(this); NEXT_CUSTOM_SETUP = nullptr; }
     }
 };
 
@@ -1275,6 +1330,49 @@ class $modify(ModsLayerExt, CCLayer) {
             );
         }
         return true;
+    }
+};
+
+#include <Geode/modify/MenuLayer.hpp>
+class $modify(ModpackAutoInstall, MenuLayer) {
+    static auto loadit(std::string file, CCScene * scene) {
+        file = CCFileUtils::get()->fullPathForFilename(file.c_str(), 0).c_str();
+        loadit_pack = new Modpack(file);
+        if (getMod()->getSavedValue<uint32_t>("loadit_hash") == fnv1a_hash(file)) return scene;
+        getMod()->setSavedValue<uint32_t>("loadit_hash", fnv1a_hash(file));
+        ModsLayer::installPack(loadit_pack, true);
+        scene = CCScene::create();
+
+        scene->addChild(geode::createLayerBG(), -10);
+        geode::addSideArt(scene);
+
+        auto msg = SimpleTextArea::create(
+            string::replace(
+                "Intalling mod pack...\n(" + file + ")\n\nThe game will be restarted on finish."
+                , "\\", "/" //windows
+            ), "goldFont.fnt"
+        );
+        msg->setAlignment(kCCTextAlignmentCenter);
+        scene->addChildAtPosition(msg, Anchor::Center, {}, false);
+
+        auto progress_text = SimpleTextArea::create("");
+        scene->runAction(CCRepeatForever::create(CCSpawn::create(CallFuncExt::create(
+            [progress_text = Ref(progress_text)] {
+                if (!progress_text) return;
+                progress_text->setText(ModsLayer::STATUS_TITLE + " " + ModsLayer::STATUS_PERCENTAGE);
+            }
+        ), nullptr)));
+        progress_text->setAnchorPoint({ 0.5f, -0.2f });
+        progress_text->setAlignment(kCCTextAlignmentCenter);
+        scene->addChildAtPosition(progress_text, Anchor::Bottom, {}, false);
+
+        return scene;
+    }
+    static CCScene* scene(bool isVideoOptionsOpen) {
+        auto scene = MenuLayer::scene(isVideoOptionsOpen);
+        if (fileExistsInSearchPaths("loadit.geode_modpack")) return loadit("loadit.geode_modpack", scene);
+        if (fileExistsInSearchPaths("loadit.geode_modlist")) return loadit("loadit.geode_modlist", scene);
+        return scene;
     }
 };
 
