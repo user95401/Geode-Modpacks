@@ -5967,7 +5967,7 @@ namespace geode::utils::file {
 
         log += "```\n";
 
-        auto zip_opn = CCMiniZFile::create("test.zip");
+        auto zip_opn = CCMiniZFile::create((dirs::getGameDir() / "test.zip").string());
         if (zip_opn.isOk()) log += "Archive loaded: test.zip\n";
         else log +="<cr>Archive wasn't loaded: "+ zip_opn.err().value_or("unk") +"</c>\n";
 
